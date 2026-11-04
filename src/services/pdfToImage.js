@@ -4,7 +4,15 @@
  * This implementation is compatible with Vercel and other serverless environments
  */
 
+const path = require('path');
 const { createCanvas } = require('@napi-rs/canvas');
+const { countVisibleTextItems } = require('./renderedTextCheck');
+
+// Servers have no installed fonts, so non-embedded fonts like Helvetica draw as nothing without these.
+const STANDARD_FONT_DATA_URL = path.join(
+  path.dirname(require.resolve('pdfjs-dist/package.json')),
+  'standard_fonts/',
+);
 
 // Lazy-loaded pdfjs-dist module (loaded once on first use)
 let pdfjsLib = null;
@@ -40,8 +48,8 @@ async function convertPDFToImages(pdfBuffer, options = {}) {
     // Load PDF document
     const loadingTask = pdfjs.getDocument({
       data: new Uint8Array(pdfBuffer),
-      useSystemFonts: true,
-      standardFontDataUrl: null, // Avoid loading external font data
+      useSystemFonts: false,
+      standardFontDataUrl: STANDARD_FONT_DATA_URL,
       useWorkerFetch: false, // Disable worker in Node.js
       isEvalSupported: false, // Disable eval for security
       disableWorker: true, // Disable worker for Node.js environment
@@ -74,6 +82,9 @@ async function convertPDFToImages(pdfBuffer, options = {}) {
 
       await page.render(renderContext).promise;
 
+      const textContent = await page.getTextContent();
+      const textCheck = countVisibleTextItems(context, textContent.items, viewport);
+
       // Convert canvas to PNG buffer
       const imageBuffer = await canvas.encode('png');
       const base64Image = imageBuffer.toString('base64');
@@ -84,7 +95,8 @@ async function convertPDFToImages(pdfBuffer, options = {}) {
         height: height,
         data: base64Image,
         mimeType: 'image/png',
-        size: imageBuffer.length
+        size: imageBuffer.length,
+        textCheck
       });
 
       console.log(`Page ${pageNum}/${numPages} converted - ${imageBuffer.length} bytes`);

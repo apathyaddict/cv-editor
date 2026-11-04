@@ -4,6 +4,7 @@ const { checkPDFEncryption } = require("../middleware/pdfValidator");
 const { getUserFriendlyError } = require("../middleware/errorHandler");
 const { convertPDFToImages, getTotalImageSize } = require("../services/pdfToImage");
 const { imagesToPDF } = require("../services/imagesToPDF");
+const { findPagesWithLostText } = require("../services/renderedTextCheck");
 
 /**
  * Get the editor UI page
@@ -78,6 +79,21 @@ const redactPDF_handler = async (req, res) => {
     // Convert redacted PDF to PNG images (one per page)
     console.log('Converting redacted PDF to PNG images...');
     const images = await convertPDFToImages(redactedPdfBuffer, { scale: 2.0 });
+
+    const lostTextPages = findPagesWithLostText(images);
+    if (lostTextPages.length > 0) {
+      console.error(
+        `Rendered text lost: ${req.file.originalname} ${JSON.stringify(lostTextPages)}`,
+      );
+      return res.status(422).json({
+        error: "Scrubbed PDF Lost Its Text",
+        code: "RENDER_TEXT_LOST",
+        message:
+          "Most of the text disappeared while scrubbing this PDF, so no scrubbed file was created. Keep the original and report this file.",
+        pages: lostTextPages,
+        processingTime: Date.now() - startTime,
+      });
+    }
 
     // Convert images back to PDF
     console.log('Converting PNG images back to PDF...');
