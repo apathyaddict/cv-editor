@@ -14,6 +14,14 @@ const STANDARD_FONT_DATA_URL = path.join(
   'standard_fonts/',
 );
 
+const PDF_LOAD_OPTIONS = {
+  useSystemFonts: false,
+  standardFontDataUrl: STANDARD_FONT_DATA_URL,
+  useWorkerFetch: false, // Disable worker in Node.js
+  isEvalSupported: false, // Disable eval for security
+  disableWorker: true, // Disable worker for Node.js environment
+};
+
 // Lazy-loaded pdfjs-dist module (loaded once on first use)
 let pdfjsLib = null;
 
@@ -48,11 +56,7 @@ async function convertPDFToImages(pdfBuffer, options = {}) {
     // Load PDF document
     const loadingTask = pdfjs.getDocument({
       data: new Uint8Array(pdfBuffer),
-      useSystemFonts: false,
-      standardFontDataUrl: STANDARD_FONT_DATA_URL,
-      useWorkerFetch: false, // Disable worker in Node.js
-      isEvalSupported: false, // Disable eval for security
-      disableWorker: true, // Disable worker for Node.js environment
+      ...PDF_LOAD_OPTIONS,
     });
 
     const pdfDocument = await loadingTask.promise;
@@ -125,6 +129,7 @@ function getTotalImageSize(images) {
 }
 
 module.exports = {
+  PDF_LOAD_OPTIONS,
   convertPDFToImages,
   getTotalImageSize
 };

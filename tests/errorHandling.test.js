@@ -1,11 +1,15 @@
 /**
- * Unit Tests for error handling middleware and PDF validation
+ * Tests for error handling middleware and PDF validation.
+ * Errors travel through a real Express app so the responses are the ones clients get.
  */
 
 const fs = require("fs");
 const path = require("path");
+const express = require("express");
 const multer = require("multer");
+const request = require("supertest");
 const { PDFDocument } = require("pdf-lib");
+const { upload } = require("../src/config/multer");
 const {
   getUserFriendlyError,
   multerErrorHandler,
@@ -14,12 +18,28 @@ const {
 } = require("../src/middleware/errorHandler");
 const { checkPDFEncryption } = require("../src/middleware/pdfValidator");
 
-function mockRes() {
-  const res = {};
-  res.status = jest.fn(() => res);
-  res.json = jest.fn(() => res);
-  return res;
-}
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const TINY_UPLOAD_LIMIT = 1024;
+
+const createApp = () => {
+  const app = express();
+  const ok = (req, res) => res.json({ ok: true });
+
+  app.post("/pdf", upload.single("file"), ok);
+  app.post(
+    "/tiny",
+    multer({ limits: { fileSize: TINY_UPLOAD_LIMIT } }).single("file"),
+    ok,
+  );
+  app.get("/fail", (req, res, next) => next(new Error(req.query.message)));
+
+  app.use(multerErrorHandler(MAX_FILE_SIZE));
+  app.use(notFoundHandler);
+  app.use(globalErrorHandler);
+  return app;
+};
+
+const app = createApp();
 
 describe("getUserFriendlyError", () => {
   test.each([
@@ -38,57 +58,57 @@ describe("getUserFriendlyError", () => {
 });
 
 describe("multerErrorHandler", () => {
-  const MAX_FILE_SIZE = 10 * 1024 * 1024;
-  const handler = multerErrorHandler(MAX_FILE_SIZE);
+  test("returns 403 for CORS errors", async () => {
+    const response = await request(app)
+      .get("/fail")
+      .query({ message: "Not allowed by CORS" })
+      .expect(403);
 
-  test("returns 403 for CORS errors", () => {
-    const res = mockRes();
-    handler(new Error("Not allowed by CORS"), {}, res, jest.fn());
-    expect(res.status).toHaveBeenCalledWith(403);
+    expect(response.body.error).toBe("CORS Error");
   });
 
-  test("returns 413 with size limit for oversized files", () => {
-    const res = mockRes();
-    handler(new multer.MulterError("LIMIT_FILE_SIZE"), {}, res, jest.fn());
-    expect(res.status).toHaveBeenCalledWith(413);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "Maximum file size is 10MB" }),
-    );
+  test("returns 413 with size limit for oversized files", async () => {
+    const response = await request(app)
+      .post("/tiny")
+      .attach("file", Buffer.alloc(TINY_UPLOAD_LIMIT + 1), "large.pdf")
+      .expect(413);
+
+    expect(response.body.message).toBe("Maximum file size is 10MB");
   });
 
-  test("returns 400 for other multer errors", () => {
-    const res = mockRes();
-    handler(new multer.MulterError("LIMIT_UNEXPECTED_FILE"), {}, res, jest.fn());
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ error: "File upload error" }),
-    );
+  test("returns 400 for other multer errors", async () => {
+    const response = await request(app)
+      .post("/tiny")
+      .attach("wrongField", Buffer.from("%PDF-"), "cv.pdf")
+      .expect(400);
+
+    expect(response.body.error).toBe("File upload error");
   });
 
-  test("returns 400 for non-PDF uploads", () => {
-    const res = mockRes();
-    handler(new Error("Only PDF files are allowed"), {}, res, jest.fn());
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ error: "Invalid file type" }),
-    );
+  test("returns 400 for non-PDF uploads", async () => {
+    const response = await request(app)
+      .post("/pdf")
+      .attach("file", Buffer.from("hello"), "notes.txt")
+      .expect(400);
+
+    expect(response.body.error).toBe("Invalid file type");
   });
 
-  test("passes unknown errors to the next handler", () => {
-    const res = mockRes();
-    const next = jest.fn();
-    const error = new Error("boom");
-    handler(error, {}, res, next);
-    expect(next).toHaveBeenCalledWith(error);
-    expect(res.status).not.toHaveBeenCalled();
+  test("passes unknown errors to the next handler", async () => {
+    const response = await request(app)
+      .get("/fail")
+      .query({ message: "boom" })
+      .expect(500);
+
+    expect(response.body.error).toBe("Internal server error");
   });
 });
 
 describe("notFoundHandler", () => {
-  test("returns 404", () => {
-    const res = mockRes();
-    notFoundHandler({}, res);
-    expect(res.status).toHaveBeenCalledWith(404);
+  test("returns 404", async () => {
+    const response = await request(app).get("/nothing-here").expect(404);
+
+    expect(response.body.error).toBe("Endpoint not found");
   });
 });
 
@@ -99,19 +119,26 @@ describe("globalErrorHandler", () => {
     process.env.NODE_ENV = originalEnv;
   });
 
-  test("hides error details in production", () => {
+  test("hides error details in production", async () => {
     process.env.NODE_ENV = "production";
-    const res = mockRes();
-    globalErrorHandler(new Error("secret internals"), {}, res, jest.fn());
-    expect(res.status).toHaveBeenCalledWith(500);
-    expect(res.json.mock.calls[0][0].message).not.toContain("secret internals");
+
+    const response = await request(app)
+      .get("/fail")
+      .query({ message: "secret internals" })
+      .expect(500);
+
+    expect(response.body.message).not.toContain("secret internals");
   });
 
-  test("shows error details outside production", () => {
+  test("shows error details outside production", async () => {
     process.env.NODE_ENV = "development";
-    const res = mockRes();
-    globalErrorHandler(new Error("debug info"), {}, res, jest.fn());
-    expect(res.json.mock.calls[0][0].message).toBe("debug info");
+
+    const response = await request(app)
+      .get("/fail")
+      .query({ message: "debug info" })
+      .expect(500);
+
+    expect(response.body.message).toBe("debug info");
   });
 });
 

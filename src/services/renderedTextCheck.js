@@ -3,8 +3,9 @@
  * Compares a page's text layer with its rendered image to catch text that failed to draw
  */
 
+const { containsPII } = require("../utils/patterns");
+
 const INK_THRESHOLD = 32;
-// Pages with only a few text items could be entirely covered by redaction boxes.
 const MIN_TEXT_ITEMS = 5;
 // Set low because CVs can legitimately contain invisible text, such as white keyword stuffing.
 const MIN_VISIBLE_RATIO = 0.5;
@@ -67,7 +68,8 @@ function getItemBox(item, viewport) {
  */
 function countVisibleTextItems(context, textItems, viewport) {
   const boxes = textItems
-    .filter((item) => item.str && item.str.trim())
+    // Text containing PII sits under a redaction box, so it is hidden on purpose.
+    .filter((item) => item.str && item.str.trim() && !containsPII(item.str.trim()))
     .map((item) => getItemBox(item, viewport))
     .filter((box) => box.width > 0 && box.height > 0);
 

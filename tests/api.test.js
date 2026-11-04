@@ -8,6 +8,17 @@ const { app, server } = require("../index");
 const fs = require("fs");
 const path = require("path");
 const { PDFDocument, StandardFonts } = require("pdf-lib");
+const { extractAllText } = require("../src/services/pdfExtractor");
+
+const createPdfWithPII = async () => {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([600, 400]);
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  page.drawText("Jane Doe", { x: 50, y: 350, size: 14, font });
+  page.drawText("jane.doe@example.com", { x: 50, y: 330, size: 12, font });
+  page.drawText("(416) 555-0100", { x: 50, y: 310, size: 12, font });
+  return Buffer.from(await pdfDoc.save());
+};
 
 describe("API Endpoints", () => {
   describe("GET /health", () => {
@@ -47,33 +58,26 @@ describe("API Endpoints", () => {
     });
 
     test("should process PDF with PII and return redacted PDF", async () => {
-      // Check if test PDF exists
-      const testPdfPath = path.join(__dirname, "../test-cv.pdf");
-      if (!fs.existsSync(testPdfPath)) {
-        console.warn("Test PDF not found, skipping this test");
-        return;
-      }
-
       const response = await request(app)
         .post("/api/editor/redact")
-        .attach("file", testPdfPath)
+        .attach("file", await createPdfWithPII(), "cv.pdf")
         .expect(200)
         .expect("Content-Type", "application/pdf");
 
-      // Check headers
-      expect(response.headers).toHaveProperty("x-redaction-stats");
       expect(response.headers).toHaveProperty("x-processing-time");
+      expect(JSON.parse(response.headers["x-redaction-stats"])).toEqual({
+        totalRedactions: 2,
+        emails: 1,
+        phones: 1,
+        pagesAffected: 1,
+      });
 
-      // Parse stats
-      const stats = JSON.parse(response.headers["x-redaction-stats"]);
-      expect(stats).toHaveProperty("totalRedactions");
-      expect(stats).toHaveProperty("emails");
-      expect(stats).toHaveProperty("phones");
-      expect(stats.totalRedactions).toBeGreaterThan(0);
-
-      // Check response is a PDF buffer
       expect(response.body).toBeInstanceOf(Buffer);
-      expect(response.body.length).toBeGreaterThan(0);
+      expect(response.body.subarray(0, 5).toString()).toBe("%PDF-");
+
+      const outputText = await extractAllText(response.body);
+      expect(outputText).not.toContain("jane.doe@example.com");
+      expect(outputText).not.toContain("555-0100");
     });
 
     test("should handle PDF with no PII gracefully", async () => {
@@ -113,55 +117,41 @@ describe("API Endpoints", () => {
     });
 
     test("should analyze PDF and return statistics without redacting", async () => {
-      const testPdfPath = path.join(__dirname, "../test-cv.pdf");
-      if (!fs.existsSync(testPdfPath)) {
-        console.warn("Test PDF not found, skipping this test");
-        return;
-      }
-
       const response = await request(app)
         .post("/api/editor/analyze")
-        .attach("file", testPdfPath)
+        .attach("file", await createPdfWithPII(), "cv.pdf")
         .expect(200)
         .expect("Content-Type", /json/);
 
-      expect(response.body).toHaveProperty("found");
-      expect(response.body).toHaveProperty("statistics");
-      expect(response.body).toHaveProperty("details");
-
-      if (response.body.found) {
-        expect(response.body.statistics).toHaveProperty("totalRedactions");
-        expect(response.body.statistics).toHaveProperty("emails");
-        expect(response.body.statistics).toHaveProperty("phones");
-        expect(response.body.details).toBeInstanceOf(Array);
-      }
+      expect(response.body.found).toBe(true);
+      expect(response.body.statistics).toEqual({
+        totalRedactions: 2,
+        emails: 1,
+        phones: 1,
+        pagesAffected: 1,
+      });
+      expect(response.body.details).toHaveLength(1);
     });
 
     test("should return detailed coordinate information in analysis", async () => {
-      const testPdfPath = path.join(__dirname, "../test-cv.pdf");
-      if (!fs.existsSync(testPdfPath)) {
-        console.warn("Test PDF not found, skipping this test");
-        return;
-      }
-
       const response = await request(app)
         .post("/api/editor/analyze")
-        .attach("file", testPdfPath)
+        .attach("file", await createPdfWithPII(), "cv.pdf")
         .expect(200);
 
-      if (response.body.found && response.body.details.length > 0) {
-        const firstPageItems = response.body.details[0].items;
-        expect(firstPageItems.length).toBeGreaterThan(0);
+      const [firstPage] = response.body.details;
+      expect(firstPage.page).toBe(1);
+      expect(firstPage.items).toHaveLength(2);
 
-        const firstItem = firstPageItems[0];
-        expect(firstItem).toHaveProperty("type");
-        expect(firstItem).toHaveProperty("text");
-        expect(firstItem).toHaveProperty("coordinates");
-        expect(firstItem.coordinates).toHaveProperty("x");
-        expect(firstItem.coordinates).toHaveProperty("y");
-        expect(firstItem.coordinates).toHaveProperty("width");
-        expect(firstItem.coordinates).toHaveProperty("height");
-      }
+      const [firstItem] = firstPage.items;
+      expect(firstItem.type).toBe("email");
+      expect(firstItem.text).toBe("jane.doe@example.com");
+      expect(firstItem.coordinates).toEqual({
+        x: expect.any(Number),
+        y: expect.any(Number),
+        width: expect.any(Number),
+        height: expect.any(Number),
+      });
     });
   });
 

@@ -16,3 +16,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+
+  # Servers like Vercel have no installed fonts, which is how text can vanish from scrubbed PDFs.
+  test-no-fonts:
+    runs-on: ubuntu-latest
+    container: node:24-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm no fonts are installed
+        run: test -z "$(find /usr/share/fonts /usr/local/share/fonts -type f 2>/dev/null)"
+      - run: npm ci
+      - run: npm test
