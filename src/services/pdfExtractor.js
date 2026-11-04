@@ -1,6 +1,6 @@
 /**
  * PDF Text Extraction Service
- * Uses unpdf (serverless-optimized PDF.js) to extract text and coordinates from PDF documents
+ * Uses PDF.js (through unpdf) to extract text and coordinates from PDF documents
  *
  * IMPORTANT: This service extracts PII (Personally Identifiable Information)
  * from PDFs including emails and phone numbers with their approximate coordinates.
@@ -19,19 +19,17 @@ let pdfjsLib;
 const { containsPII, findEmails, findPhones } = require("../utils/patterns");
 
 /**
- * Initialize unpdf library using dynamic import
+ * Initialize PDF.js through unpdf using dynamic import
  * Uses lazy loading pattern - only imports once on first call
  *
- * unpdf is a serverless-optimized build of PDF.js that works across
- * all JavaScript runtimes including Node.js, Vercel, and Cloudflare Workers
- *
- * @returns {Promise<Object>} The PDF.js library object from unpdf
+ * @returns {Promise<Object>} The pdfjs-dist module resolved by unpdf
  */
 async function initPdfjs() {
   if (!pdfjsLib) {
     try {
-      // Use unpdf's getResolvedPDFJS to get the serverless-compatible PDF.js module
-      const { getResolvedPDFJS } = await import("unpdf");
+      const { definePDFJSModule, getResolvedPDFJS } = await import("unpdf");
+      // Rendering uses pdfjs-dist, and two pdf.js versions in one process fail with a worker version mismatch.
+      definePDFJSModule(() => import("pdfjs-dist/legacy/build/pdf.mjs"));
       pdfjsLib = await getResolvedPDFJS();
     } catch (error) {
       // If dynamic import fails (e.g., in Jest), throw a clear error
